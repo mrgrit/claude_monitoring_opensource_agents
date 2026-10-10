@@ -1,0 +1,406 @@
+#!/usr/bin/env python3
+"""Hermes supervisor: drives the small local model through queue.json one repo at a time,
+watches its live stream-json, intervenes automatically, and escalates to the human/Claude supervisor.
+
+  files
+    queue.json            task list + status (pending|running|done|needs_sudo|skip|review|failed)
+    logs/<name>/rN.jsonl  raw hermes stream per round
+    events.log            human timeline (everything)
+    alerts.log            things needing supervisor attention (AUTO = auto-intervened, ESCALATE = needs a human/Claude)
+    control/              commands from ctl.py (nudge / skip / pause / stop)
+    run/current.json      what is running now (task, round, pid, counters)
+"""
+import collections, hashlib, json, os, re, signal, subprocess, sys, threading, time
+
+KIT = '/home/thor-01/offensive'
+SUP = f'{KIT}/supervisor'
+Q = f'{SUP}/queue.json'
+CTL = f'{SUP}/control'
+HERMES = os.path.expanduser('~/.local/bin/hermes')
+
+MAX_ROUNDS = 8          # hermes invocations per task (initial + nudges + gate retries)
+MAX_AUTO_NUDGES = 4     # beyond this -> escalate, park task as "review"
+MAX_GATE_FAILS = 3
+STALL_SEC = 420         # no stream event while model is "thinking" (no tool running)
+TOOL_HANG_SEC = 1500    # a single tool call running this long
+TOOL_CAP = 90           # tool calls per task
+ROUND_BUDGET = 2700     # hermes --run-budget per round
+
+FORBID = [
+    (re.compile(r'(^|[;&|\s(])sudo\s'), 'sudo is not available/allowed. Put required apt packages into NEEDS_SUDO_APT in the recipe and continue without them.'),
+    (re.compile(r'\bapt(-get)?\s+(install|remove|purge|upgrade)'), 'apt is not allowed (no sudo). List packages in NEEDS_SUDO_APT instead.'),
+    (re.compile(r'--break-system-packages'), 'Never pip-install into system python. Use a venv: python3 -m venv "$VENVS/<name>".'),
+    (re.compile(r'\bgit\s+push\b'), 'git push is forbidden.'),
+    (re.compile(r'(>>?|tee\s+-a?)\s*~?/?(home/thor-01/)?\.(bashrc|profile|zshrc)'), 'Do not edit shell rc files. Put binaries/wrappers in kit/bin.'),
+    (re.compile(r'\brm\s+-[a-zA-Z]*r[a-zA-Z]*\s+(-[a-z]+\s+)*(/|~|\$HOME|/home/thor-01/?|/home/thor-01/offensive/?|\$KIT/?|\.\.?/?)(\s|$|;)'), 'Destructive rm on a top-level directory is forbidden.'),
+    (re.compile(r'\brm\s+-[a-zA-Z]*r[a-zA-Z]*.*(/home/thor-01/offensive/(gh|bin|install|docs|supervisor|victim|state)/?)(\s|$|;)'), 'Never delete kit top-level dirs (gh, bin, install, docs, supervisor, victim, state).'),
+]
+SCANNERS = re.compile(r'\b(nmap|masscan|naabu|nuclei|sqlmap|hydra|nikto|ffuf|gobuster|dirb|wfuzz|httpx|katana|dalfox|amass|subfinder|puredns|massdns)\b')
+SAFE_HOST = re.compile(r'^(127\.\d+\.\d+\.\d+|localhost|::1|0\.0\.0\.0|example\.(com|org|net)|.*\.example\.(com|org|net)|scanme\.nmap\.org)$')
+HOSTISH = re.compile(r'(?<![\w./-])((?:\d{1,3}\.){3}\d{1,3}(?:/\d+)?|(?:[a-z0-9-]+\.)+(?:com|net|org|io|kr|gov|edu|co|me|ai|xyz))(?![\w-])', re.I)
+
+GUIDE = {
+    'stall': "SUPERVISOR: You have produced no action for {sec}s — you are over-thinking. Stop deliberating. "
+             "State in ONE sentence what you will do next, then immediately run exactly one concrete command. "
+             "Current goal for {name}: {goal}",
+    'loop': "SUPERVISOR: You ran the same command {n} times: `{cmd}`. It will not give a different result. "
+            "Do something different: read the error, check the README/build file, try another install method, "
+            "or if this repo cannot work on linux/arm64, set KIND=skip with a SKIP_REASON and write the short manual.",
+    'errs': "SUPERVISOR: {n} commands in a row failed. Step back. Summarise the root cause in one sentence, "
+            "then choose a simpler path (e.g. a plain venv + requirements.txt, `go build ./...`, or a prebuilt release). "
+            "If it is truly impossible here, use KIND=skip. Last error: {err}",
+    'hang': "SUPERVISOR: Your command `{cmd}` ran {sec}s and was killed. Always wrap long commands in `timeout 600` "
+            "and avoid interactive programs (pass --help / -h, use -y, never open a REPL or TUI).",
+    'cap': "SUPERVISOR: You have used {n} tool calls on {name}. Wrap up NOW: write the recipe with what works "
+           "(or KIND=skip with reason), write the manual, run the gate, reply DONE.",
+    'budget': "SUPERVISOR: The previous round hit its time budget. Continue from where you are; do not redo finished steps. "
+              "Next: {goal}",
+    'noresult': "SUPERVISOR: You stopped without passing the gate. Run `bash {sup}/gate.sh {name}` and fix every FAIL reason. "
+                "Reply DONE only after it prints PASS (or NEEDS_SUDO).",
+    'gatefail': "SUPERVISOR: Independent gate re-check FAILED for {name}. Fix exactly these problems, rerun the gate, then reply DONE:\n{why}",
+}
+
+
+def now():
+    return time.strftime('%F %T')
+
+
+def log(kind, name, msg, alert=None):
+    line = f'[{now()}] {kind:<9} {name:<28} {msg}'
+    with open(f'{SUP}/events.log', 'a') as f:
+        f.write(line + '\n')
+    if alert:
+        with open(f'{SUP}/alerts.log', 'a') as f:
+            f.write(f'[{now()}] {alert:<8} {name:<28} {kind}: {msg}\n')
+    print(line, flush=True)
+
+
+def load_q():
+    return json.load(open(Q))
+
+
+def save_q(q):
+    tmp = Q + '.tmp'
+    json.dump(q, open(tmp, 'w'), indent=1, ensure_ascii=False)
+    os.replace(tmp, Q)
+
+
+def set_task(name, **kw):
+    q = load_q()
+    for t in q:
+        if t['name'] == name:
+            t.update(kw)
+    save_q(q)
+
+
+def ctl_take(name):
+    """Return list of (cmd, payload) control requests and delete them."""
+    out = []
+    if not os.path.isdir(CTL):
+        return out
+    for f in sorted(os.listdir(CTL)):
+        p = f'{CTL}/{f}'
+        cmd = f.split('.')[0]
+        if cmd in ('pause', 'stop'):
+            continue  # level-triggered, handled by caller
+        target = f.split('.')[1] if f.count('.') >= 1 else '*'
+        if target not in ('*', name):
+            continue
+        out.append((cmd, open(p).read().strip()))
+        os.remove(p)
+    return out
+
+
+def goal_hint(name):
+    rf = f'{KIT}/install/recipes/{name}.sh'
+    mf = f'{KIT}/docs/manuals/{name}.md'
+    if not os.path.exists(rf):
+        return 'get the tool running, then write the recipe install/recipes/%s.sh' % name
+    if not os.path.exists(mf):
+        return 'write the Korean manual docs/manuals/%s.md, then run the gate' % name
+    return f'run `bash {SUP}/gate.sh {name}` and fix what it reports'
+
+
+def render_prompt(t):
+    p = open(f'{SUP}/PROMPT.md').read()
+    extra = ''
+    if t.get('guidance'):
+        extra = '\n\nSUPERVISOR GUIDANCE FOR THIS REPO (from a previous attempt — follow it):\n' + t['guidance']
+    return (p.replace('__NAME__', t['name']).replace('__URL__', t['url']).replace('__HINT__', t['hint'])
+             .replace('__LANGS__', ','.join(t['langs']) or '-').replace('__MARKERS__', ','.join(t['markers']) or '-')) + extra
+
+
+class Round:
+    """One hermes invocation + live watchdog."""
+
+    def __init__(self, t, rnd, query, stats):
+        self.t, self.name, self.rnd, self.query, self.st = t, t['name'], rnd, query, stats
+        os.makedirs(f'{SUP}/logs/{self.name}', exist_ok=True)
+        self.logf = f'{SUP}/logs/{self.name}/r{rnd}.jsonl'
+        self.last_ev = time.time()
+        self.pending_tool = None  # (cmd, started)
+        self.recent = collections.deque(maxlen=10)
+        self.err_streak = 0
+        self.last_err = ''
+        self.final = None
+        self.intervention = None  # (reason_key, message, alert_level)
+        self.lock = threading.Lock()
+
+    def start(self):
+        qf = f'{SUP}/run/query.txt'
+        open(qf, 'w').write(self.query)
+        cmd = [HERMES, 'chat', '--query-file', qf, '--format', 'stream-json', '--yolo',
+               '--max-turns', '60', '--run-budget', str(ROUND_BUDGET),
+               '--continue', f'kit-{self.name}', '--create-if-missing']
+        self.p = subprocess.Popen(cmd, cwd=KIT, stdout=subprocess.PIPE, stderr=open(self.logf + '.err', 'a'),
+                                  stdin=subprocess.DEVNULL, text=True, start_new_session=True)
+        threading.Thread(target=self.reader, daemon=True).start()
+
+    def kill(self):
+        try:
+            os.killpg(self.p.pid, signal.SIGTERM)
+            for _ in range(20):
+                if self.p.poll() is not None:
+                    return
+                time.sleep(0.5)
+            os.killpg(self.p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def intervene(self, key, msg, level='AUTO'):
+        with self.lock:
+            if self.intervention is None:
+                self.intervention = (key, msg, level)
+
+    def reader(self):
+        with open(self.logf, 'a') as lf:
+            for line in self.p.stdout:
+                lf.write(line)
+                lf.flush()
+                try:
+                    ev = json.loads(line)
+                except Exception:
+                    continue
+                self.on_event(ev)
+
+    def on_event(self, ev):
+        self.last_ev = time.time()
+        typ = ev.get('type')
+        if typ == 'tool_use':
+            self.st['tools'] += 1
+            inp = ev.get('input', {})
+            cmd = inp.get('command') or json.dumps(inp, ensure_ascii=False)
+            cmd = ' '.join(str(cmd).split())
+            self.pending_tool = (cmd, time.time())
+            log('tool', self.name, f'#{self.st["tools"]} {ev.get("name")}: {cmd[:160]}')
+            self.check_cmd(ev.get('name'), cmd)
+            key = hashlib.md5(cmd.encode()).hexdigest()
+            self.recent.append((key, cmd))
+            n = sum(1 for k, _ in self.recent if k == key)
+            if n >= 3:
+                self.intervene('loop', GUIDE['loop'].format(n=n, cmd=cmd[:200]))
+            if self.st['tools'] >= TOOL_CAP and not self.st.get('capped'):
+                self.st['capped'] = True
+                self.intervene('cap', GUIDE['cap'].format(n=self.st['tools'], name=self.name), 'ESCALATE')
+        elif typ == 'tool_result':
+            self.pending_tool = None
+            out = str(ev.get('output', ''))
+            rc = None
+            try:
+                rc = json.loads(out).get('exit_code')
+            except Exception:
+                pass
+            failed = ev.get('is_error') or (rc not in (None, 0))
+            if failed:
+                self.err_streak += 1
+                self.last_err = out[-300:]
+                if self.err_streak >= 6:
+                    self.intervene('errs', GUIDE['errs'].format(n=self.err_streak, err=self.last_err))
+            else:
+                self.err_streak = 0
+            if 'PASS ' + self.name in out or 'NEEDS_SUDO ' + self.name in out:
+                log('gate', self.name, 'agent self-test reports ' + ('PASS' if 'PASS ' + self.name in out else 'NEEDS_SUDO'))
+        elif typ == 'result':
+            self.final = ev
+
+    def check_cmd(self, tool, cmd):
+        if tool not in ('terminal', 'shell', 'bash', 'execute_code', 'run'):
+            return
+        for rx, why in FORBID:
+            if rx.search(cmd):
+                self.intervene('forbid', f'SUPERVISOR: Command blocked: `{cmd[:160]}`. {why}', 'ESCALATE')
+                return
+        if SCANNERS.search(cmd):
+            for h in HOSTISH.findall(cmd):
+                if not SAFE_HOST.match(h.split('/')[0]) and not h.startswith(('gh.', 'github.')):
+                    if re.search(r'(github\.com|go\.dev|golang\.org|pypi\.org|projectdiscovery\.io)', h):
+                        continue
+                    self.intervene('forbid', f'SUPERVISOR: Command blocked: `{cmd[:160]}` targets external host {h}. '
+                                   'Only 127.0.0.1 / localhost / example.com may be used for functional tests.', 'ESCALATE')
+                    return
+
+    def watch(self):
+        """Block until the round ends. Returns ('exit', final) or ('intervene', (key,msg,level)) or ('ctl', ...)."""
+        while True:
+            if self.p.poll() is not None:
+                time.sleep(1)  # let reader drain
+                return 'exit', self.final
+            # supervisor commands
+            for cmd, payload in ctl_take(self.name):
+                if cmd == 'nudge':
+                    self.intervene('manual', 'SUPERVISOR: ' + payload, 'MANUAL')
+                elif cmd == 'skip':
+                    self.kill()
+                    return 'skip', payload
+                elif cmd == 'abort':
+                    self.kill()
+                    return 'abort', payload
+            if os.path.exists(f'{CTL}/stop'):
+                self.kill()
+                return 'stop', None
+            t = time.time()
+            if self.pending_tool:
+                cmd, started = self.pending_tool
+                if t - started > TOOL_HANG_SEC:
+                    self.intervene('hang', GUIDE['hang'].format(cmd=cmd[:160], sec=int(t - started)))
+            elif t - self.last_ev > STALL_SEC:
+                self.intervene('stall', GUIDE['stall'].format(sec=int(t - self.last_ev), name=self.name,
+                                                              goal=goal_hint(self.name)))
+            if self.intervention:
+                self.kill()
+                return 'intervene', self.intervention
+            json.dump({'task': self.name, 'round': self.rnd, 'pid': self.p.pid, 'tools': self.st['tools'],
+                       'nudges': self.st['nudges'], 'err_streak': self.err_streak,
+                       'idle_s': int(t - self.last_ev), 'pending_tool': self.pending_tool and self.pending_tool[0][:120],
+                       'since': self.st['since']}, open(f'{SUP}/run/current.json', 'w'), ensure_ascii=False)
+            time.sleep(3)
+
+
+def run_gate(name):
+    p = subprocess.run(['bash', f'{SUP}/gate.sh', name], capture_output=True, text=True, timeout=2000)
+    return p.returncode, (p.stdout + p.stderr).strip()
+
+
+def publish(name, status):
+    """Commit ONLY this task's gate-checked artifacts to the kit repo (mrgrit/offensive_system) and push."""
+    try:
+        subprocess.run(['python3', f'{SUP}/assemble.py'], capture_output=True, timeout=120)
+        files = [f for f in (f'install/recipes/{name}.sh', f'docs/manuals/{name}.md', 'install/install_all.sh',
+                             'reports/install_verdicts.json') if os.path.exists(f'{KIT}/{f}')]
+        g = lambda *a: subprocess.run(['git', '-C', KIT, *a], capture_output=True, text=True, timeout=300)
+        g('add', '--', *files)
+        if g('diff', '--cached', '--quiet').returncode == 0:
+            return
+        msg = (f'[hermes] {name}: {status}\n\nRecipe and Korean manual written by hermes-agent (local Qwen 27B).\n'
+               f'Re-installed and verified in a clean shell by supervisor/gate.py before commit.')
+        r = g('commit', '-q', '-m', msg, '--', *files)
+        if r.returncode:
+            log('git', name, 'commit failed: ' + r.stderr.strip()[:200], 'ESCALATE')
+            return
+        r = g('push', '-q', 'origin', 'HEAD:main')
+        if r.returncode:
+            g('pull', '-q', '--rebase', 'origin', 'main')
+            r = g('push', '-q', 'origin', 'HEAD:main')
+        log('git', name, 'pushed to offensive_system' if r.returncode == 0 else 'push failed: ' + r.stderr.strip()[:200],
+            None if r.returncode == 0 else 'ESCALATE')
+    except Exception as e:
+        log('git', name, f'publish error {e}', 'ESCALATE')
+
+
+def run_task(t):
+    name = t['name']
+    st = {'tools': 0, 'nudges': 0, 'gate_fails': 0, 'since': now()}
+    set_task(name, status='running', attempts=t.get('attempts', 0) + 1, started=now())
+    log('start', name, f'hint={t["hint"]} langs={t["langs"]}')
+    query = render_prompt(t)
+    for rnd in range(1, MAX_ROUNDS + 1):
+        r = Round(t, rnd, query, st)
+        r.start()
+        what, data = r.watch()
+        if what == 'stop':
+            set_task(name, status='pending')
+            log('stop', name, 'runner stop requested')
+            return 'stop'
+        if what == 'skip':
+            set_task(name, status='skip', note=data, finished=now())
+            log('skip', name, f'supervisor skipped: {data}', 'MANUAL')
+            return 'next'
+        if what == 'abort':
+            set_task(name, status='review', note=data, finished=now())
+            log('abort', name, f'supervisor parked task: {data}', 'MANUAL')
+            return 'next'
+        if what == 'intervene':
+            key, msg, level = data
+            if key != 'manual':
+                st['nudges'] += 1
+            log('intervene', name, f'[{key}] {msg[:220]}', level)
+            if st['nudges'] > MAX_AUTO_NUDGES:
+                set_task(name, status='review', note=f'too many auto-interventions (last: {key})', finished=now())
+                log('park', name, 'auto-interventions exhausted -> review', 'ESCALATE')
+                return 'next'
+            query = msg
+            continue
+        # hermes exited by itself
+        fin = data or {}
+        txt = (fin.get('text') or '').strip()
+        log('exit', name, f'round {rnd} exit={fin.get("exit_code")} tools={st["tools"]} said: {txt[-160:]!r}')
+        rc, out = run_gate(name)
+        if rc == 0:
+            set_task(name, status='done', finished=now(), tools=st['tools'], nudges=st['nudges'])
+            log('PASS', name, out.splitlines()[0], 'OK')
+            publish(name, 'verified (' + out.split('kind=')[-1].strip() + ')')
+            return 'next'
+        if rc == 2:
+            set_task(name, status='needs_sudo', finished=now(), note=out.splitlines()[-1])
+            log('needsudo', name, out.splitlines()[-1], 'SUDO')
+            publish(name, 'recipe ok, needs apt packages')
+            return 'next'
+        st['gate_fails'] += 1
+        log('gatefail', name, out.replace('\n', ' | ')[:300])
+        if st['gate_fails'] >= MAX_GATE_FAILS:
+            set_task(name, status='review', note='gate failed %d times' % st['gate_fails'], finished=now())
+            log('park', name, 'gate failures exhausted -> review: ' + out.replace('\n', ' | ')[:300], 'ESCALATE')
+            return 'next'
+        budget_hit = 'budget' in (fin.get('text') or '').lower() or fin.get('exit_code') not in (0, None)
+        if 'DONE' in txt:
+            query = GUIDE['gatefail'].format(name=name, why=out)
+        elif budget_hit:
+            query = GUIDE['budget'].format(goal=goal_hint(name)) + '\nGate status:\n' + out
+        else:
+            query = GUIDE['noresult'].format(sup=SUP, name=name) + '\nCurrent gate output:\n' + out
+    set_task(name, status='review', note='rounds exhausted', finished=now())
+    log('park', name, 'max rounds exhausted -> review', 'ESCALATE')
+    return 'next'
+
+
+def main():
+    os.makedirs(CTL, exist_ok=True)
+    os.makedirs(f'{SUP}/run', exist_ok=True)
+    only = sys.argv[1:]
+    # crash recovery: anything left "running" goes back to pending
+    q = load_q()
+    for t in q:
+        if t['status'] == 'running':
+            t['status'] = 'pending'
+    save_q(q)
+    log('runner', '-', f'started pid={os.getpid()} only={only or "all"}', 'INFO')
+    while True:
+        if os.path.exists(f'{CTL}/stop'):
+            os.remove(f'{CTL}/stop')
+            break
+        if os.path.exists(f'{CTL}/pause'):
+            time.sleep(5)
+            continue
+        q = load_q()
+        todo = [t for t in q if t['status'] == 'pending' and (not only or t['name'] in only)]
+        if not todo:
+            break
+        if run_task(todo[0]) == 'stop':
+            break
+    if os.path.exists(f'{SUP}/run/current.json'):
+        os.remove(f'{SUP}/run/current.json')
+    log('runner', '-', 'finished / stopped', 'INFO')
+
+
+if __name__ == '__main__':
+    main()

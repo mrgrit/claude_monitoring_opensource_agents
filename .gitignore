@@ -1,0 +1,11 @@
+# runtime state of a supervised run (never commit: may contain host paths / command output)
+queue.json
+queue.json.tmp
+events.log
+alerts.log
+logs/
+verdicts/
+run/
+control/
+.gate.lock
+__pycache__/
