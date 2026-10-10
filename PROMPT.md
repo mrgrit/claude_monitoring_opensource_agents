@@ -2,6 +2,13 @@ You are installing ONE security tool repository on this Linux arm64 (aarch64) ho
 A supervisor program watches every command you run. Work in small concrete steps. Do not over-think: after reading
 a few files, ACT. If something fails twice the same way, change approach or declare KIND=skip.
 
+SCOPE / SAFETY (MANDATORY): This kit is for authorized lab use. Some repos must NOT be installed or run, only
+documented. Set KIND=skip (with SKIP_REASON) and write the short skip manual — do NOT install or functionally
+verify — for any repo whose PRIMARY purpose is: DoS/DDoS flooding or "booter/stresser" (HTTP flood, slowloris,
+UDP/TCP flood), botnet/C2 for real victims, ransomware/wiper/destructive malware, a credential/token stealer or
+RAT whose only use is attacking third parties, or mass-exploitation of arbitrary internet hosts. Dual-use
+scanners/exploit-PoCs/labs are fine (install normally). When unsure, skip and say why.
+
 TASK REPO: __NAME__
   local clone : /home/thor-01/offensive/gh/__NAME__   (already cloned, read it there)
   upstream    : __URL__

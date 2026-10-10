@@ -307,8 +307,47 @@ def publish(name, status):
         log('git', name, f'publish error {e}', 'ESCALATE')
 
 
+# Repos whose PRIMARY purpose is attacking third parties: never installed or functionally
+# verified — the supervisor writes a documentation-only skip itself (the small model never
+# gets to build them). name -> reason. Keep this tight; dual-use scanners/PoCs are NOT here.
+DENY = {
+    'DogeRat': 'Telegram-controlled Android RAT built to covertly control victim devices — real-victim malware, not dual-use.',
+    'GhostManSec': 'Backdoor generator plus layer4/layer7 DDoS flooder — primary purpose is attacking third parties.',
+    'OctoC2': 'Offensive C2 framework for controlling real victim hosts — out of scope for an install-and-verify kit.',
+    'router-kill': 'Network-disruption / deauth-flood tool whose purpose is knocking targets offline (DoS).',
+}
+
+
+def force_skip(name, reason):
+    """Supervisor writes the skip recipe + Korean manual directly. No install, no hermes."""
+    rf = f'{KIT}/install/recipes/{name}.sh'
+    mf = f'{KIT}/docs/manuals/{name}.md'
+    url = next((t['url'] for t in load_q() if t['name'] == name), '')
+    open(rf, 'w').write(
+        f'# recipe: {name}  (POLICY SKIP — supervisor)\nNAME="{name}"\nKIND="skip"\nREPO="{url}"\n'
+        f'SRC="$GHD/$NAME"\nNEEDS_SUDO_APT=""\nSKIP_REASON="{reason}"\n\n'
+        'do_install() { echo "policy skip: not installed"; return 0; }\n'
+        'do_verify()  { echo "policy skip"; return 0; }\n')
+    open(mf, 'w').write(
+        f'# {name} — 설치 제외(SKIP)\n\n## 개요\n\n이 저장소는 **감독자 정책에 의해 설치·동작검증을 수행하지 않고 문서로만 남긴다.**\n\n'
+        f'제외 사유: {reason}\n\n본 킷은 인가된 실험실 환경에서의 방어·점검용 도구만 설치한다. '
+        f'제3자(타인의 기기·네트워크)를 공격·감염·마비시키는 것이 주목적인 도구는 설치 대상에서 제외한다. '
+        f'아래는 저장소의 성격을 식별하기 위한 참고 기록일 뿐, 실행을 전제로 하지 않는다.\n\n'
+        f'## 구성\n\n- 원본 저장소: {url}\n- 로컬 클론: `gh/{name}` (참고용, 빌드/실행하지 않음)\n'
+        f'- 분류: 공격 전용(offense-only) — dual-use 아님\n\n'
+        f'## 활용\n\n설치하지 않는다. 연구·식별 목적이라면 격리된 오프라인 분석 환경에서 정적 분석만 수행하고, '
+        f'실제 네트워크·기기를 대상으로 구동하지 않는다. 원샷 설치 스크립트(`install/install_all.sh`)에는 포함되지 않는다.\n')
+    set_task(name, status='skip', note='policy: ' + reason, finished=now())
+    log('policyskip', name, reason, 'MANUAL')
+    run_gate(name)  # records a verdict (kind=skip) so assemble.py excludes it cleanly
+    publish(name, 'policy skip (offense-only, documentation only)')
+
+
 def run_task(t):
     name = t['name']
+    if name in DENY:
+        force_skip(name, DENY[name])
+        return 'next'
     st = {'tools': 0, 'nudges': 0, 'gate_fails': 0, 'since': now()}
     set_task(name, status='running', attempts=t.get('attempts', 0) + 1, started=now())
     log('start', name, f'hint={t["hint"]} langs={t["langs"]}')
