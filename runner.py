@@ -10,13 +10,14 @@ watches its live stream-json, intervenes automatically, and escalates to the hum
     control/              commands from ctl.py (nudge / skip / pause / stop)
     run/current.json      what is running now (task, round, pid, counters)
 """
-import collections, hashlib, json, os, re, signal, subprocess, sys, threading, time
+import collections, contextlib, fcntl, hashlib, json, os, re, signal, subprocess, sys, threading, time
 
 KIT = '/home/thor-01/offensive'
 SUP = f'{KIT}/supervisor'
 Q = f'{SUP}/queue.json'
 CTL = f'{SUP}/control'
 HERMES = os.path.expanduser('~/.local/bin/hermes')
+WID = os.environ.get('WID') or str(os.getpid())  # worker id (parallel-safe current file)
 
 MAX_ROUNDS = 8          # hermes invocations per task (initial + nudges + gate retries)
 MAX_AUTO_NUDGES = 4     # beyond this -> escalate, park task as "review"
@@ -75,22 +76,50 @@ def log(kind, name, msg, alert=None):
     print(line, flush=True)
 
 
+@contextlib.contextmanager
+def flock(path):
+    """Cross-process advisory lock so parallel workers don't clobber queue.json / git."""
+    f = open(path, 'w')
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(f, fcntl.LOCK_UN)
+        f.close()
+
+
 def load_q():
     return json.load(open(Q))
 
 
 def save_q(q):
-    tmp = Q + '.tmp'
+    tmp = f'{Q}.{WID}.tmp'
     json.dump(q, open(tmp, 'w'), indent=1, ensure_ascii=False)
     os.replace(tmp, Q)
 
 
 def set_task(name, **kw):
-    q = load_q()
-    for t in q:
-        if t['name'] == name:
-            t.update(kw)
-    save_q(q)
+    with flock(f'{SUP}/.queue.lock'):
+        q = load_q()
+        for t in q:
+            if t['name'] == name:
+                t.update(kw)
+        save_q(q)
+
+
+def claim_next(only):
+    """Atomically take the first pending task and mark it running for this worker."""
+    with flock(f'{SUP}/.queue.lock'):
+        q = load_q()
+        for t in q:
+            if t['status'] == 'pending' and (not only or t['name'] in only):
+                t['status'] = 'running'
+                t['attempts'] = t.get('attempts', 0) + 1
+                t['started'] = now()
+                t['worker'] = WID
+                save_q(q)
+                return t
+    return None
 
 
 def ctl_take(name):
@@ -147,11 +176,11 @@ class Round:
         self.lock = threading.Lock()
 
     def start(self):
-        qf = f'{SUP}/run/query.txt'
+        qf = f'{SUP}/run/query.{WID}.r{self.rnd}.txt'  # per-worker+round: never shared across parallel workers
         open(qf, 'w').write(self.query)
         cmd = [HERMES, 'chat', '--query-file', qf, '--format', 'stream-json', '--yolo',
                '--max-turns', '60', '--run-budget', str(ROUND_BUDGET),
-               '--continue', f'kit-{self.name}', '--create-if-missing']
+               '--continue', f'kitp-{self.name}', '--create-if-missing']
         self.p = subprocess.Popen(cmd, cwd=KIT, stdout=subprocess.PIPE, stderr=open(self.logf + '.err', 'a'),
                                   stdin=subprocess.DEVNULL, text=True, start_new_session=True)
         threading.Thread(target=self.reader, daemon=True).start()
@@ -272,7 +301,8 @@ class Round:
             json.dump({'task': self.name, 'round': self.rnd, 'pid': self.p.pid, 'tools': self.st['tools'],
                        'nudges': self.st['nudges'], 'err_streak': self.err_streak,
                        'idle_s': int(t - self.last_ev), 'pending_tool': self.pending_tool and self.pending_tool[0][:120],
-                       'since': self.st['since']}, open(f'{SUP}/run/current.json', 'w'), ensure_ascii=False)
+                       'since': self.st['since'], 'worker': WID},
+                      open(f'{SUP}/run/current.{WID}.json', 'w'), ensure_ascii=False)
             time.sleep(3)
 
 
@@ -284,25 +314,26 @@ def run_gate(name):
 def publish(name, status):
     """Commit ONLY this task's gate-checked artifacts to the kit repo (mrgrit/offensive_system) and push."""
     try:
-        subprocess.run(['python3', f'{SUP}/assemble.py'], capture_output=True, timeout=120)
-        files = [f for f in (f'install/recipes/{name}.sh', f'docs/manuals/{name}.md', 'install/install_all.sh',
-                             'reports/install_verdicts.json') if os.path.exists(f'{KIT}/{f}')]
-        g = lambda *a: subprocess.run(['git', '-C', KIT, *a], capture_output=True, text=True, timeout=300)
-        g('add', '--', *files)
-        if g('diff', '--cached', '--quiet').returncode == 0:
-            return
-        msg = (f'[hermes] {name}: {status}\n\nRecipe and Korean manual written by hermes-agent (local Qwen 27B).\n'
-               f'Re-installed and verified in a clean shell by supervisor/gate.py before commit.')
-        r = g('commit', '-q', '-m', msg, '--', *files)
-        if r.returncode:
-            log('git', name, 'commit failed: ' + r.stderr.strip()[:200], 'ESCALATE')
-            return
-        r = g('push', '-q', 'origin', 'HEAD:main')
-        if r.returncode:
-            g('pull', '-q', '--rebase', 'origin', 'main')
+        with flock(f'{SUP}/.git.lock'):  # serialize index/push across parallel workers
+            subprocess.run(['python3', f'{SUP}/assemble.py'], capture_output=True, timeout=120)
+            files = [f for f in (f'install/recipes/{name}.sh', f'docs/manuals/{name}.md', 'install/install_all.sh',
+                                 'reports/install_verdicts.json') if os.path.exists(f'{KIT}/{f}')]
+            g = lambda *a: subprocess.run(['git', '-C', KIT, *a], capture_output=True, text=True, timeout=300)
+            g('add', '--', *files)
+            if g('diff', '--cached', '--quiet').returncode == 0:
+                return
+            msg = (f'[hermes] {name}: {status}\n\nRecipe and Korean manual written by hermes-agent (local Qwen 27B).\n'
+                   f'Re-installed and verified in a clean shell by supervisor/gate.py before commit.')
+            r = g('commit', '-q', '-m', msg, '--', *files)
+            if r.returncode:
+                log('git', name, 'commit failed: ' + r.stderr.strip()[:200], 'ESCALATE')
+                return
             r = g('push', '-q', 'origin', 'HEAD:main')
-        log('git', name, 'pushed to offensive_system' if r.returncode == 0 else 'push failed: ' + r.stderr.strip()[:200],
-            None if r.returncode == 0 else 'ESCALATE')
+            if r.returncode:
+                g('pull', '-q', '--rebase', 'origin', 'main')
+                r = g('push', '-q', 'origin', 'HEAD:main')
+            log('git', name, 'pushed to offensive_system' if r.returncode == 0 else 'push failed: ' + r.stderr.strip()[:200],
+                None if r.returncode == 0 else 'ESCALATE')
     except Exception as e:
         log('git', name, f'publish error {e}', 'ESCALATE')
 
@@ -349,8 +380,7 @@ def run_task(t):
         force_skip(name, DENY[name])
         return 'next'
     st = {'tools': 0, 'nudges': 0, 'gate_fails': 0, 'since': now()}
-    set_task(name, status='running', attempts=t.get('attempts', 0) + 1, started=now())
-    log('start', name, f'hint={t["hint"]} langs={t["langs"]}')
+    log('start', name, f'[w{WID}] hint={t["hint"]} langs={t["langs"]}')
     query = render_prompt(t)
     for rnd in range(1, MAX_ROUNDS + 1):
         r = Round(t, rnd, query, st)
@@ -416,29 +446,29 @@ def main():
     os.makedirs(CTL, exist_ok=True)
     os.makedirs(f'{SUP}/run', exist_ok=True)
     only = sys.argv[1:]
-    # crash recovery: anything left "running" goes back to pending
-    q = load_q()
-    for t in q:
-        if t['status'] == 'running':
-            t['status'] = 'pending'
-    save_q(q)
-    log('runner', '-', f'started pid={os.getpid()} only={only or "all"}', 'INFO')
+    # crash recovery: reclaim only THIS worker's orphaned running tasks (don't touch a live sibling's).
+    with flock(f'{SUP}/.queue.lock'):
+        q = load_q()
+        for t in q:
+            if t['status'] == 'running' and t.get('worker') in (WID, None, ''):
+                t['status'] = 'pending'
+        save_q(q)
+    log('runner', '-', f'started w{WID} pid={os.getpid()} only={only or "all"}', 'INFO')
     while True:
         if os.path.exists(f'{CTL}/stop'):
-            os.remove(f'{CTL}/stop')
             break
         if os.path.exists(f'{CTL}/pause'):
             time.sleep(5)
             continue
-        q = load_q()
-        todo = [t for t in q if t['status'] == 'pending' and (not only or t['name'] in only)]
-        if not todo:
+        t = claim_next(only)
+        if not t:
             break
-        if run_task(todo[0]) == 'stop':
+        if run_task(t) == 'stop':
             break
-    if os.path.exists(f'{SUP}/run/current.json'):
-        os.remove(f'{SUP}/run/current.json')
-    log('runner', '-', 'finished / stopped', 'INFO')
+    cf = f'{SUP}/run/current.{WID}.json'
+    if os.path.exists(cf):
+        os.remove(cf)
+    log('runner', '-', f'w{WID} finished / stopped', 'INFO')
 
 
 if __name__ == '__main__':

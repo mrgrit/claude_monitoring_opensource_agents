@@ -25,11 +25,17 @@ def main():
     c = a[0]
     q = json.load(open(f'{SUP}/queue.json'))
     if c == 'status':
+        import glob
         cnt = collections.Counter(t['status'] for t in q)
         print('queue:', dict(cnt), f'total={len(q)}')
-        cur = f'{SUP}/run/current.json'
-        if os.path.exists(cur):
-            print('running:', open(cur).read())
+        for cur in sorted(glob.glob(f'{SUP}/run/current.*.json')):
+            try:
+                d = json.load(open(cur))
+                print(f"  w{d.get('worker')}: {d.get('task')} r{d.get('round')} tools={d.get('tools')} "
+                      f"nudges={d.get('nudges')} idle={d.get('idle_s')}s "
+                      f"{'TOOL:'+d['pending_tool'] if d.get('pending_tool') else ''}")
+            except Exception:
+                pass
         for s in ('review', 'needs_sudo'):
             xs = [f"{t['name']}({t.get('note','')[:60]})" for t in q if t['status'] == s]
             if xs:

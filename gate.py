@@ -13,6 +13,7 @@ HEAD = {'tool': ['개요', '설치', '검증', '기본 사용법', '실전 예�
         'data': ['개요', '구성', '활용'], 'skip': ['개요', '구성', '활용']}
 BAD_OUT = re.compile(r'Traceback \(most recent|command not found|No module named|ModuleNotFoundError|'
                      r'cannot execute|exec format error|No such file or directory|ImportError|panic:', re.I)
+ASKPASS = os.path.expanduser('~/.config/kit_askpass.sh')  # trusted sudo for apt (supervisor only)
 
 
 def sh(script, timeout, cwd):
@@ -99,8 +100,20 @@ def gate(name, do_install=True):
             missing.append(pkg)
     v['missing_apt'] = missing
     if missing and not R:
-        v['needs_sudo'] = True
-        return v, [f'NEEDS_SUDO: apt packages not installed: {" ".join(missing)} (recipe otherwise ok)']
+        # Trusted path only: the supervisor (not the agent) installs declared apt packages via sudo.
+        if os.path.exists(ASKPASS) and not os.environ.get('GATE_NO_SUDO'):
+            inst = (f'export SUDO_ASKPASS="{ASKPASS}"; sudo -A -k apt-get update -qq && '
+                    f'sudo -A apt-get install -y {" ".join(missing)}')
+            rc, out = sh(inst, 1200, KIT)
+            v['apt_install_rc'] = rc
+            still = [p for p in missing if sh(f'dpkg -s {p} 2>/dev/null | grep -q "Status: install ok installed"', 10, KIT)[0]]
+            if still:
+                v['needs_sudo'] = True
+                return v, [f'NEEDS_SUDO: apt install failed for: {" ".join(still)} (rc={rc})\n{out[-500:]}']
+            v['apt_installed'] = missing
+        else:
+            v['needs_sudo'] = True
+            return v, [f'NEEDS_SUDO: apt packages not installed: {" ".join(missing)} (recipe otherwise ok)']
     if R:
         return v, R
     # ---- reproduce: install + verify in a clean shell from a neutral cwd
