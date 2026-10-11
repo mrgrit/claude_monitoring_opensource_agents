@@ -19,13 +19,22 @@ CTL = f'{SUP}/control'
 HERMES = os.path.expanduser('~/.local/bin/hermes')
 WID = os.environ.get('WID') or str(os.getpid())  # worker id (parallel-safe current file)
 
-MAX_ROUNDS = 8          # hermes invocations per task (initial + nudges + gate retries)
-MAX_AUTO_NUDGES = 4     # beyond this -> escalate, park task as "review"
-MAX_GATE_FAILS = 3
-STALL_SEC = 420         # no stream event while model is "thinking" (no tool running)
-TOOL_HANG_SEC = 1500    # a single tool call running this long
-TOOL_CAP = 90           # tool calls per task
-ROUND_BUDGET = 2700     # hermes --run-budget per round
+def _envint(k, d):
+    try:
+        return int(os.environ.get(k, d))
+    except ValueError:
+        return d
+
+MAX_ROUNDS = _envint('KIT_MAX_ROUNDS', 8)        # hermes invocations per task (initial + nudges + gate retries)
+MAX_AUTO_NUDGES = _envint('KIT_MAX_NUDGES', 5)   # beyond this -> escalate, park task as "review"
+MAX_GATE_FAILS = _envint('KIT_MAX_GATEFAILS', 3)
+# No stream event while the model is generating (no tool running). With N workers sharing one
+# inference slot, a single large-context response can legitimately take many minutes, so this must
+# be generous enough not to false-trigger under contention. Only a TRUE hang should cross it.
+STALL_SEC = _envint('KIT_STALL_SEC', 900)
+TOOL_HANG_SEC = _envint('KIT_TOOL_HANG_SEC', 1500)  # a single tool call running this long
+TOOL_CAP = _envint('KIT_TOOL_CAP', 90)              # tool calls per task
+ROUND_BUDGET = _envint('KIT_ROUND_BUDGET', 3000)    # hermes --run-budget per round
 
 FORBID = [
     # sudo only when it actually INVOKES a privileged action (not when "sudo" is a grep/cat argument or appears in a recipe's text).
