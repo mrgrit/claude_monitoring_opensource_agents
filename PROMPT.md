@@ -50,7 +50,8 @@ STEPS
    finish; that authoritative run does the clean-shell rebuild, so you do not need to complete it within your 580s limit.
 
 RULES: no sudo, no apt, no `pip --break-system-packages`, no edits to ~/.bashrc, no git push, no rm outside kit/gh/__NAME__,
-kit/bin, kit/.venvs/__NAME__. Wrap long commands in `timeout` with a value <= 580s and run them in the FOREGROUND —
-never use `&` or background a command. A command that needs more than ~580s is a sign to simplify, not to background it
-(backgrounded commands here lose their output and their process IDs, so never rely on one). Do not work on any other repo.
+kit/bin, kit/.venvs/__NAME__. Keep EVERY command short enough to stay in the foreground: the shell `timeout` value AND
+the terminal tool's own `timeout` parameter must BOTH be <= 580 (anything above 600 is auto-promoted to a BACKGROUND
+process and you lose its output and process id). Never use `&` or background a command. A command that needs more than
+~580s is a sign to simplify, not to background it. Do not work on any other repo.
 Messages starting with "SUPERVISOR:" come from your supervisor — follow them exactly.
