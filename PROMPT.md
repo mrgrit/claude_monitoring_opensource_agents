@@ -33,10 +33,13 @@ STEPS
    tool/lab: "## 개요", "## 설치", "## 검증", "## 기본 사용법", "## 실전 예제", "## 주의사항"  (>= 40 lines, real flags taken
    from the tool's actual --help output, >= 5 copy-paste ```bash examples, targets only 127.0.0.1 / example.com / lab hosts)
    data/skip: "## 개요", "## 구성", "## 활용"  (>= 15 lines; for skip explain why in 개요)
-5. Self-test:  bash /home/thor-01/offensive/supervisor/gate.sh __NAME__
+5. Self-test, ALWAYS in the FOREGROUND (never background it, never use `&`):
+     timeout 580 bash /home/thor-01/offensive/supervisor/gate.sh __NAME__ 2>&1 | tail -40
    It reinstalls from your recipe in a clean shell and checks everything. If it prints FAIL, fix the listed reasons and run it again.
-   When it prints PASS, reply with one line "DONE __NAME__ <KIND>" and stop.
+   When it prints PASS (or NEEDS_SUDO), reply with one line "DONE __NAME__ <KIND>" and stop.
 
 RULES: no sudo, no apt, no `pip --break-system-packages`, no edits to ~/.bashrc, no git push, no rm outside kit/gh/__NAME__,
-kit/bin, kit/.venvs/__NAME__. Long commands: wrap in `timeout 600`. Do not work on any other repo.
+kit/bin, kit/.venvs/__NAME__. Wrap long commands in `timeout` with a value <= 580s and run them in the FOREGROUND —
+never use `&` or background a command. A command that needs more than ~580s is a sign to simplify, not to background it
+(backgrounded commands here lose their output and their process IDs, so never rely on one). Do not work on any other repo.
 Messages starting with "SUPERVISOR:" come from your supervisor — follow them exactly.
