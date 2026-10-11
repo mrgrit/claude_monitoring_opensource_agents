@@ -33,6 +33,9 @@ STEPS
 3. Write the recipe: copy /home/thor-01/offensive/supervisor/recipe_template.sh to
    /home/thor-01/offensive/install/recipes/__NAME__.sh and fill it in. do_install must reproduce your working install
    from a fresh clone; do_verify must run the tool and return non-zero if broken. For data: do_verify checks the key files exist.
+   do_verify MUST be fast (<240s) and NON-BLOCKING: never start a long-running server/daemon/web-UI (streamlit, flask,
+   uvicorn, node, a GUI) and wait on it — that hangs until the gate times out. For a server/UI tool, verify it is
+   installed and importable instead: check module import plus `<tool> --version` or `--help`, not by booting the service.
    For a needed apt package you cannot install: put it in NEEDS_SUDO_APT (supervisor handles it).
 4. Write the manual /home/thor-01/offensive/docs/manuals/__NAME__.md IN KOREAN. Required headings:
    tool/lab: "## 개요", "## 설치", "## 검증", "## 기본 사용법", "## 실전 예제", "## 주의사항"  (>= 40 lines, real flags taken
