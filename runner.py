@@ -50,6 +50,9 @@ FORBID = [
     (re.compile(r'\brm\s+-[a-zA-Z]*r[a-zA-Z]*.*(/home/thor-01/offensive/(gh|bin|install|docs|supervisor|victim|state)/?)(\s|$|;)'), 'Never delete kit top-level dirs (gh, bin, install, docs, supervisor, victim, state).'),
 ]
 SCANNERS = re.compile(r'\b(nmap|masscan|naabu|nuclei|sqlmap|hydra|nikto|ffuf|gobuster|dirb|wfuzz|httpx|katana|dalfox|amass|subfinder|puredns|massdns)\b')
+# Well-known public DNS resolvers: used AS resolvers by DNS tools (massdns/puredns/dnsx) to look up the
+# safe test domain example.com — a benign lookup, not an attack. Allowed so DNS tools can be verified.
+PUBLIC_RESOLVERS = {'8.8.8.8', '8.8.4.4', '1.1.1.1', '1.0.0.1', '9.9.9.9', '149.112.112.112', '208.67.222.222'}
 SAFE_HOST = re.compile(r'^(127\.\d+\.\d+\.\d+|localhost|::1|0\.0\.0\.0|example\.(com|org|net)|.*\.example\.(com|org|net)|scanme\.nmap\.org)$')
 HOSTISH = re.compile(r'(?<![\w./-])((?:\d{1,3}\.){3}\d{1,3}(?:/\d+)?|(?:[a-z0-9-]+\.)+(?:com|net|org|io|kr|gov|edu|co|me|ai|xyz))(?![\w-])', re.I)
 
@@ -287,7 +290,8 @@ class Round:
                 return
         if SCANNERS.search(cmd):
             for h in HOSTISH.findall(cmd):
-                if not SAFE_HOST.match(h.split('/')[0]) and not h.startswith(('gh.', 'github.')):
+                host = h.split('/')[0]
+                if not SAFE_HOST.match(host) and host not in PUBLIC_RESOLVERS and not h.startswith(('gh.', 'github.')):
                     if re.search(r'(github\.com|go\.dev|golang\.org|pypi\.org|projectdiscovery\.io)', h):
                         continue
                     self.intervene('forbid', f'SUPERVISOR: Command blocked: `{cmd[:160]}` targets external host {h}. '
