@@ -42,6 +42,12 @@ STEPS
      timeout 580 bash /home/thor-01/offensive/supervisor/gate.sh __NAME__ 2>&1 | tail -40
    It reinstalls from your recipe in a clean shell and checks everything. If it prints FAIL, fix the listed reasons and run it again.
    When it prints PASS (or NEEDS_SUDO), reply with one line "DONE __NAME__ <KIND>" and stop.
+   HEAVY BUILDS: if your do_install compiles from scratch and takes longer than ~8 minutes (e.g. a Rust `cargo build
+   --release`, or a large C/C++ project), the 580s foreground limit will KILL the gate mid-build so it can never finish
+   for you. In that case do NOT keep re-running the full gate. Instead prove the recipe yourself with two quick checks —
+   (a) run do_install's build once (you already did), and (b) run just the do_verify body by hand and confirm it exits 0 —
+   then reply "DONE __NAME__ <KIND>". The supervisor re-runs the FULL gate itself with a much longer budget after you
+   finish; that authoritative run does the clean-shell rebuild, so you do not need to complete it within your 580s limit.
 
 RULES: no sudo, no apt, no `pip --break-system-packages`, no edits to ~/.bashrc, no git push, no rm outside kit/gh/__NAME__,
 kit/bin, kit/.venvs/__NAME__. Wrap long commands in `timeout` with a value <= 580s and run them in the FOREGROUND —
