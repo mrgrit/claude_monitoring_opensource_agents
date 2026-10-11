@@ -28,8 +28,12 @@ TOOL_CAP = 90           # tool calls per task
 ROUND_BUDGET = 2700     # hermes --run-budget per round
 
 FORBID = [
-    (re.compile(r'(^|[;&|\s(])sudo\s'), 'sudo is not available/allowed. Put required apt packages into NEEDS_SUDO_APT in the recipe and continue without them.'),
-    (re.compile(r'\bapt(-get)?\s+(install|remove|purge|upgrade)'), 'apt is not allowed (no sudo). List packages in NEEDS_SUDO_APT instead.'),
+    # sudo only when it actually INVOKES a privileged action (not when "sudo" is a grep/cat argument or appears in a recipe's text).
+    (re.compile(r'\bsudo\s+(?:-\w+\s+)*(?:apt|apt-get|dpkg|systemctl|service|yum|dnf|snap|pip\d?|npm|make|tee|cp|mv|rm|chmod|chown|mkdir|ln|bash|sh|docker|mount|modprobe|sysctl|useradd|usermod|install|visudo|passwd|kill)\b'),
+     'sudo is not available/allowed. Put required apt packages into NEEDS_SUDO_APT in the recipe and continue without them.'),
+    # apt install/remove/etc. only in command position (start or after a separator), not inside a grep/cat of some text.
+    (re.compile(r'(?:^|[;&|(]|&&|\|\|)\s*(?:timeout\s+\d+\s+)?apt(?:-get)?\s+(?:install|remove|purge|upgrade)'),
+     'apt is not allowed (no sudo). List packages in NEEDS_SUDO_APT instead.'),
     (re.compile(r'--break-system-packages'), 'Never pip-install into system python. Use a venv: python3 -m venv "$VENVS/<name>".'),
     (re.compile(r'\bgit\s+push\b'), 'git push is forbidden.'),
     (re.compile(r'(>>?|tee\s+-a?)\s*~?/?(home/thor-01/)?\.(bashrc|profile|zshrc)'), 'Do not edit shell rc files. Put binaries/wrappers in kit/bin.'),
@@ -252,9 +256,16 @@ class Round:
         elif typ == 'result':
             self.final = ev
 
+    # a command whose ONLY action is reading/inspecting files can't execute a privileged op,
+    # even if the text it prints happens to contain "sudo"/"apt"/"rm -rf" (e.g. grepping a recipe).
+    READONLY = re.compile(r'^(?:cat|less|more|head|tail|grep|rg|egrep|fgrep|awk|sed\s+-n|wc|diff|ls|find|file|stat|cut|sort|uniq|echo|printf|column)\b')
+
     def check_cmd(self, tool, cmd):
         if tool not in ('terminal', 'shell', 'bash', 'execute_code', 'run'):
             return
+        stripped = cmd.strip().lstrip('(').strip()
+        if self.READONLY.match(stripped) and not re.search(r'[;&|]|&&|\|\||\$\(|`', stripped):
+            return  # pure single read-only inspection; no execution possible
         for rx, why in FORBID:
             if rx.search(cmd):
                 self.intervene('forbid', f'SUPERVISOR: Command blocked: `{cmd[:160]}`. {why}', 'ESCALATE')
