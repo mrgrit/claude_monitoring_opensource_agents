@@ -236,11 +236,14 @@ class Round:
             self.pending_tool = (cmd, time.time())
             log('tool', self.name, f'#{self.st["tools"]} {ev.get("name")}: {cmd[:160]}')
             self.check_cmd(ev.get('name'), cmd)
-            key = hashlib.md5(cmd.encode()).hexdigest()
-            self.recent.append((key, cmd))
-            n = sum(1 for k, _ in self.recent if k == key)
-            if n >= 3:
-                self.intervene('loop', GUIDE['loop'].format(n=n, cmd=cmd[:200]))
+            # Re-running the gate after editing the recipe is legitimate iteration, not a loop
+            # (same command string, but the recipe it tests changed). Only flag true repetition.
+            if 'gate.sh' not in cmd and 'gate.py' not in cmd:
+                key = hashlib.md5(cmd.encode()).hexdigest()
+                self.recent.append((key, cmd))
+                n = sum(1 for k, _ in self.recent if k == key)
+                if n >= 3:
+                    self.intervene('loop', GUIDE['loop'].format(n=n, cmd=cmd[:200]))
             if self.st['tools'] >= TOOL_CAP and not self.st.get('capped'):
                 self.st['capped'] = True
                 self.intervene('cap', GUIDE['cap'].format(n=self.st['tools'], name=self.name), 'ESCALATE')
