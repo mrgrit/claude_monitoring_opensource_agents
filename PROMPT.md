@@ -14,9 +14,14 @@ TASK REPO: __NAME__
   upstream    : __URL__
   pre-triage  : hint=__HINT__ langs=__LANGS__ markers=__MARKERS__   (hint may be wrong — check yourself)
 
-HOST FACTS: Ubuntu 24.04 aarch64, NO sudo (password required), python3.12 + venv, go1.22 (GOTOOLCHAIN=auto, GOBIN=kit/bin),
-gcc/make/cmake, java21, docker (works without sudo). node/npm/cargo NOT installed.
-Kit root /home/thor-01/offensive ; binaries/wrappers go in kit/bin ; python venvs in kit/.venvs/<name>.
+HOST FACTS: Ubuntu 24.04 aarch64, NO sudo (password required), python3.12 + venv, go1.22 (GOTOOLCHAIN=auto, GOBIN=$BIN),
+gcc/make/cmake, java21, docker (works without sudo). node/npm/cargo NOT installed (for Rust, install rustup into $HOME/.cargo — no sudo).
+PATHS — use the env vars from supervisor/kit_env.sh, do NOT invent directories:
+  kit root  = /home/thor-01/offensive            (this IS the root; there is NO "kit/" subdirectory under it — never create offensive/kit/)
+  $BIN      = /home/thor-01/offensive/bin         (binaries/wrappers go HERE; it is already on PATH)
+  $VENVS    = /home/thor-01/offensive/.venvs      (python venv per tool: $VENVS/<name>)
+  $GHD      = /home/thor-01/offensive/gh          (the clones)
+Always write the venv to $VENVS/<name> and the wrapper to $BIN/<name>, by those variable names.
 Optional local test target: WebBank victim app http://127.0.0.1:4561 (may be down). NEVER touch external hosts.
 
 STEPS
