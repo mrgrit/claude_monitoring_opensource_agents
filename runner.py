@@ -186,6 +186,7 @@ class Round:
         self.last_err = ''
         self.final = None
         self.intervention = None  # (reason_key, message, alert_level)
+        self.self_passed = None   # (ts, tools) when the agent's own gate self-test first printed PASS
         self.lock = threading.Lock()
 
     def start(self):
@@ -265,6 +266,8 @@ class Round:
                 self.err_streak = 0
             if 'PASS ' + self.name in out or 'NEEDS_SUDO ' + self.name in out:
                 log('gate', self.name, 'agent self-test reports ' + ('PASS' if 'PASS ' + self.name in out else 'NEEDS_SUDO'))
+                if not self.self_passed:
+                    self.self_passed = (time.time(), self.st['tools'])
         elif typ == 'result':
             self.final = ev
 
@@ -311,6 +314,15 @@ class Round:
                 self.kill()
                 return 'stop', None
             t = time.time()
+            # Auto-finalize: the agent's own gate self-test printed PASS but it keeps working instead of
+            # replying DONE (a recurring small-model pattern: over-polishing the manual). Once it has had a
+            # grace window to stop on its own, end the round and let run_task run the authoritative gate.
+            if self.self_passed and not self.pending_tool:
+                ts0, tools0 = self.self_passed
+                if t - ts0 > 150 or self.st['tools'] - tools0 >= 4:
+                    log('autofinal', self.name, 'agent self-PASSed but did not stop; finalizing round', 'AUTO')
+                    self.kill()
+                    return 'exit', (self.final or {'exit_code': 0, 'text': 'DONE (auto-finalized after self-PASS)'})
             if self.pending_tool:
                 cmd, started = self.pending_tool
                 if t - started > TOOL_HANG_SEC:
