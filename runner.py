@@ -44,7 +44,7 @@ FORBID = [
     (re.compile(r'(?:^|[;&|(]|&&|\|\|)\s*(?:timeout\s+\d+\s+)?apt(?:-get)?\s+(?:install|remove|purge|upgrade)'),
      'apt is not allowed (no sudo). List packages in NEEDS_SUDO_APT instead.'),
     (re.compile(r'--break-system-packages'), 'Never pip-install into system python. Use a venv: python3 -m venv "$VENVS/<name>".'),
-    (re.compile(r'\bgit\s+push\b'), 'git push is forbidden.'),
+    (re.compile(r'(?:^|[;&|(]|&&|\|\|)\s*(?:timeout\s+\d+\s+)?git\s+push\b'), 'git push is forbidden.'),
     (re.compile(r'(>>?|tee\s+-a?)\s*~?/?(home/thor-01/)?\.(bashrc|profile|zshrc)'), 'Do not edit shell rc files. Put binaries/wrappers in kit/bin.'),
     (re.compile(r'\brm\s+-[a-zA-Z]*r[a-zA-Z]*\s+(-[a-z]+\s+)*(/|~|\$HOME|/home/thor-01/?|/home/thor-01/offensive/?|\$KIT/?|\.\.?/?)(\s|$|;)'), 'Destructive rm on a top-level directory is forbidden.'),
     (re.compile(r'\brm\s+-[a-zA-Z]*r[a-zA-Z]*.*(/home/thor-01/offensive/(gh|bin|install|docs|supervisor|victim|state)/?)(\s|$|;)'), 'Never delete kit top-level dirs (gh, bin, install, docs, supervisor, victim, state).'),
@@ -145,10 +145,14 @@ def ctl_take(name):
         return out
     for f in sorted(os.listdir(CTL)):
         p = f'{CTL}/{f}'
-        cmd = f.split('.')[0]
+        # filename is "<cmd>.<target>.<ts>"; target may itself contain dots (e.g. cheat.sh,
+        # cvecrowd.com, Mr.Holmes), so cmd is the first field, ts the last, target the middle.
+        parts = f.split('.')
+        if len(parts) < 3:
+            continue
+        cmd, target = parts[0], '.'.join(parts[1:-1])
         if cmd in ('pause', 'stop'):
             continue  # level-triggered, handled by caller
-        target = f.split('.')[1] if f.count('.') >= 1 else '*'
         if target not in ('*', name):
             continue
         out.append((cmd, open(p).read().strip()))
