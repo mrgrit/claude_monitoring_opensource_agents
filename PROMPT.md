@@ -36,6 +36,9 @@ STEPS
    do_verify MUST be fast (<240s) and NON-BLOCKING: never start a long-running server/daemon/web-UI (streamlit, flask,
    uvicorn, node, a GUI) and wait on it — that hangs until the gate times out. For a server/UI tool, verify it is
    installed and importable instead: check module import plus `<tool> --version` or `--help`, not by booting the service.
+   For a KIND=lab docker-compose app (a vulnerable training environment): do NOT start the full stack or debug its
+   runtime — do_verify should only validate the setup, e.g. `docker compose -f "$SRC/docker-compose.yml" config >/dev/null`
+   (and optionally that the image builds); the manual explains that users run it with `docker compose up`.
    For a needed apt package you cannot install: put it in NEEDS_SUDO_APT (supervisor handles it).
 4. Write the manual /home/thor-01/offensive/docs/manuals/__NAME__.md IN KOREAN. Required headings:
    tool/lab: "## 개요", "## 설치", "## 검증", "## 기본 사용법", "## 실전 예제", "## 주의사항"  (>= 40 lines, real flags taken
