@@ -43,7 +43,11 @@ def gate(name, do_install=True):
         return v, R
     if '/home/thor-01' in txt:
         R.append('recipe hardcodes /home/thor-01 — use $KIT/$BIN/$VENVS/$GHD instead')
-    if re.search(r'\bsudo\b', txt):
+    # strip comments (and the NEEDS_SUDO_APT / SKIP_REASON assignment lines) before checking for a real
+    # sudo invocation — the word "sudo" in an explanatory comment ("no sudo needed") must not false-trigger.
+    code_only = '\n'.join(re.sub(r'#.*', '', l) for l in txt.splitlines()
+                          if not re.match(r'\s*(NEEDS_SUDO_APT|SKIP_REASON)=', l))
+    if re.search(r'(?:^|[;&|(]|&&|\|\|)\s*(?:timeout\s+\d+\s+)?sudo\s', code_only, re.M):
         R.append('recipe uses sudo — forbidden; list apt packages in NEEDS_SUDO_APT instead')
     rc, out = sh(f'source "{ENV}"; source "{rf}"; '
                  'printf "NAME=%s\\nKIND=%s\\nREPO=%s\\nNEEDS=%s\\nSKIP=%s\\n" "$NAME" "$KIND" "$REPO" "$NEEDS_SUDO_APT" "$SKIP_REASON"; '
