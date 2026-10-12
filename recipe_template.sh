@@ -1,6 +1,7 @@
 # recipe: __NAME__   (copy this file to install/recipes/__NAME__.sh and fill it in)
 # Available vars: $KIT (kit root) $BIN (kit/bin, on PATH) $VENVS (kit/.venvs) $GHD (kit/gh)
-# NEVER hardcode /home/... paths. NEVER use sudo. Everything must be idempotent.
+# NEVER hardcode /home/... paths — ALWAYS use $KIT $BIN $VENVS $GHD $SRC (the gate rejects any "/home/thor-01" in this file).
+# NEVER use sudo. Everything must be idempotent.
 NAME="__NAME__"
 KIND="tool"            # tool | data | lab | skip
 REPO="__URL__"
@@ -17,6 +18,8 @@ do_install() {
 
 do_verify() {
   # Must actually RUN the tool (e.g. `tool --help`) and fail (non-zero) if it is broken. Local only, no external targets.
-  # example:  "$BIN/tool" --help 2>&1 | grep -qi usage
+  # The gate REJECTS do_verify that masks failure: NO "|| true", NO "exit 0", NO "return 0", NO bare ":".
+  # Every check ends in "|| return 1" (fail) — never "|| true". Be fast & non-blocking: never start a server and wait.
+  # example:  "$BIN/tool" --help 2>&1 | grep -qi usage || return 1
   false
 }
