@@ -38,7 +38,7 @@ ROUND_BUDGET = _envint('KIT_ROUND_BUDGET', 3000)    # hermes --run-budget per ro
 
 FORBID = [
     # sudo only when it actually INVOKES a privileged action (not when "sudo" is a grep/cat argument or appears in a recipe's text).
-    (re.compile(r'\bsudo\s+(?:-\w+\s+)*(?:apt|apt-get|dpkg|systemctl|service|yum|dnf|snap|pip\d?|npm|make|tee|cp|mv|rm|chmod|chown|mkdir|ln|bash|sh|docker|mount|modprobe|sysctl|useradd|usermod|install|visudo|passwd|kill)\b'),
+    (re.compile(r'\bsudo\s+(?:-\w+\s+)*(?:apt|apt-get|dpkg|systemctl|service|yum|dnf|snap|pip\d?|npm|make|tee|cp|mv|rm|chmod|chown|mkdir|ln|bash|sh|docker|mount|modprobe|sysctl|useradd|usermod|visudo|passwd|kill)\b'),
      'sudo is not available/allowed. Put required apt packages into NEEDS_SUDO_APT in the recipe and continue without them.'),
     # apt install/remove/etc. only in command position (start or after a separator), not inside a grep/cat of some text.
     (re.compile(r'(?:^|[;&|(]|&&|\|\|)\s*(?:timeout\s+\d+\s+)?apt(?:-get)?\s+(?:install|remove|purge|upgrade)'),
