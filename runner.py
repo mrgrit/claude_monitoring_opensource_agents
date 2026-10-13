@@ -246,7 +246,10 @@ class Round:
             self.check_cmd(ev.get('name'), cmd)
             # Re-running the gate after editing the recipe is legitimate iteration, not a loop
             # (same command string, but the recipe it tests changed). Only flag true repetition.
-            if 'gate.sh' not in cmd and 'gate.py' not in cmd:
+            # Exclude recipe re-testing from loop detection: re-running the gate, or sourcing the recipe
+            # and calling do_verify/do_install, is legitimate fix-and-retry (same command string, but the
+            # recipe it exercises changed each time) — not a true repetition loop.
+            if not any(s in cmd for s in ('gate.sh', 'gate.py', 'do_verify', 'do_install')):
                 key = hashlib.md5(cmd.encode()).hexdigest()
                 self.recent.append((key, cmd))
                 n = sum(1 for k, _ in self.recent if k == key)
