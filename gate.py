@@ -41,12 +41,12 @@ def gate(name, do_install=True):
     if rc:
         R.append(f'recipe has bash syntax error: {out.strip()[:300]}')
         return v, R
-    if '/home/thor-01' in txt:
-        R.append('recipe hardcodes /home/thor-01 — use $KIT/$BIN/$VENVS/$GHD instead')
     # strip comments (and the NEEDS_SUDO_APT / SKIP_REASON assignment lines) before checking for a real
-    # sudo invocation — the word "sudo" in an explanatory comment ("no sudo needed") must not false-trigger.
+    # hardcoded path or sudo invocation — the string in an explanatory comment must not false-trigger.
     code_only = '\n'.join(re.sub(r'#.*', '', l) for l in txt.splitlines()
                           if not re.match(r'\s*(NEEDS_SUDO_APT|SKIP_REASON)=', l))
+    if '/home/thor-01' in code_only:
+        R.append('recipe hardcodes /home/thor-01 — use $KIT/$BIN/$VENVS/$GHD instead')
     if re.search(r'(?:^|[;&|(]|&&|\|\|)\s*(?:timeout\s+\d+\s+)?sudo\s', code_only, re.M):
         R.append('recipe uses sudo — forbidden; list apt packages in NEEDS_SUDO_APT instead')
     rc, out = sh(f'source "{ENV}"; source "{rf}"; '
