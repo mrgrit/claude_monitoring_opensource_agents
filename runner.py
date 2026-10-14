@@ -47,7 +47,9 @@ FORBID = [
     (re.compile(r'(?:^|[;&|(]|&&|\|\|)\s*(?:timeout\s+\d+\s+)?git\s+push\b'), 'git push is forbidden.'),
     (re.compile(r'(>>?|tee\s+-a?)\s*~?/?(home/thor-01/)?\.(bashrc|profile|zshrc)'), 'Do not edit shell rc files. Put binaries/wrappers in kit/bin.'),
     (re.compile(r'\brm\s+-[a-zA-Z]*r[a-zA-Z]*\s+(-[a-z]+\s+)*(/|~|\$HOME|/home/thor-01/?|/home/thor-01/offensive/?|\$KIT/?|\.\.?/?)(\s|$|;)'), 'Destructive rm on a top-level directory is forbidden.'),
-    (re.compile(r'\brm\s+-[a-zA-Z]*r[a-zA-Z]*.*(/home/thor-01/offensive/(gh|bin|install|docs|supervisor|victim|state)/?)(\s|$|;)'), 'Never delete kit top-level dirs (gh, bin, install, docs, supervisor, victim, state).'),
+    # Match only the rm's OWN argument segment ([^;&|] stops the match crossing && / ; / | into an
+    # unrelated `cd .../gh` later in the chain). Blocks `rm -rf .../gh` (the whole dir), not `.../gh/<subdir>`.
+    (re.compile(r'\brm\s+-[a-zA-Z]*r[a-zA-Z]*[^;&|]*?(/home/thor-01/offensive/(gh|bin|install|docs|supervisor|victim|state)/?)(\s|$|;|&|\|)'), 'Never delete kit top-level dirs (gh, bin, install, docs, supervisor, victim, state).'),
 ]
 SCANNERS = re.compile(r'\b(nmap|masscan|naabu|nuclei|sqlmap|hydra|nikto|ffuf|gobuster|dirb|wfuzz|httpx|katana|dalfox|amass|subfinder|puredns|massdns)\b')
 # Well-known public DNS resolvers: used AS resolvers by DNS tools (massdns/puredns/dnsx) to look up the
