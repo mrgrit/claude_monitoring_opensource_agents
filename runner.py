@@ -505,6 +505,13 @@ def main():
     while True:
         if os.path.exists(f'{CTL}/stop'):
             break
+        # drain: finish the current task, then exit (graceful restart to pick up new runner code)
+        dr = [f for f in (f'{CTL}/drain', f'{CTL}/drain.{WID}') if os.path.exists(f)]
+        if dr:
+            if dr[-1].endswith('.' + WID):
+                os.remove(dr[-1])
+            log('runner', '-', f'w{WID} draining (control/drain)', 'INFO')
+            break
         if os.path.exists(f'{CTL}/pause'):
             time.sleep(5)
             continue

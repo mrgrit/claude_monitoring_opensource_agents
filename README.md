@@ -28,7 +28,8 @@
 ```
 runner.py          큐 구동 + 실시간 워치독 + 자동 개입 + 게이트 + git publish
 gate.py / gate.sh  독립 수용 게이트 (레시피 문법, 하드코딩 경로/sudo 금지, 깨끗한 셸 재설치, 실행 검증, 매뉴얼 형식·분량·한국어)
-ctl.py             감독자 콘솔: status / tail / show / nudge / skip / abort / requeue / pause / resume / stop
+ctl.py             감독자 콘솔: status / tail / show / nudge / skip / abort / requeue / pause / resume / stop / drain
+                   drain [WID]: 현재 작업을 끝낸 뒤 워커 종료 → runner.py 수정 후 무손실 재시작용 (재기동 전 control/drain 삭제)
 assemble.py        PASS 레시피만 모아 install/install_all.sh (단일 자급식 원샷 스크립트) 생성
 triage.py          저장소 사전 분류 (빌드 파일·언어 마커) → queue.json
 PROMPT.md          작업 1건 단위 프롬프트 (작은 모델용: 단계 고정, 산출물 계약 명시)

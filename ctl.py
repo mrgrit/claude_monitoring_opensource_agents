@@ -8,6 +8,7 @@
   ctl.py abort "<reason>"           park current task as review, move on
   ctl.py requeue <name> "<guidance>"  put a task back to pending with guidance injected into its prompt
   ctl.py pause | resume | stop      pause after current task / continue / stop runner now
+  ctl.py drain [WID]                each worker (or only WID) exits after finishing its current task
 """
 import collections, json, os, sys, time
 
@@ -76,6 +77,10 @@ def main():
         put(c, ' '.join(a[1:]))
         print(f'{c} queued')
     elif c == 'requeue':
+        import fcntl
+        lk = open(f'{SUP}/.queue.lock', 'w')
+        fcntl.flock(lk, fcntl.LOCK_EX)   # same lock the runners use; avoid clobbering their writes
+        q = json.load(open(f'{SUP}/queue.json'))
         for t in q:
             if t['name'] == a[1]:
                 t['status'] = 'pending'
@@ -88,6 +93,9 @@ def main():
     elif c == 'resume':
         if os.path.exists(f'{CTL}/pause'):
             os.remove(f'{CTL}/pause')
+    elif c == 'drain':
+        open(f'{CTL}/drain' + (f'.{a[1]}' if len(a) > 1 else ''), 'w').write('')
+        print('drain requested', a[1] if len(a) > 1 else '(all)')
     elif c == 'stop':
         open(f'{CTL}/stop', 'w').write('')
     else:
