@@ -9,3 +9,7 @@ run/
 control/
 .gate.lock
 __pycache__/
+.git.lock
+.queue.lock
+.aar_run.sh
+h1search_verify.py
