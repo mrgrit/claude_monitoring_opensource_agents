@@ -494,6 +494,15 @@ def main():
     os.makedirs(CTL, exist_ok=True)
     os.makedirs(f'{SUP}/run', exist_ok=True)
     only = sys.argv[1:]
+    # singleton per WID: a duplicate launch would reset the live sibling's task to pending and double-run it.
+    import fcntl
+    global _wid_lock
+    _wid_lock = open(f'{SUP}/run/worker.{WID}.lock', 'w')
+    try:
+        fcntl.flock(_wid_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log('runner', '-', f'w{WID} already running; duplicate launch pid={os.getpid()} exits', 'WARN')
+        sys.exit(1)
     # crash recovery: reclaim only THIS worker's orphaned running tasks (don't touch a live sibling's).
     with flock(f'{SUP}/.queue.lock'):
         q = load_q()
