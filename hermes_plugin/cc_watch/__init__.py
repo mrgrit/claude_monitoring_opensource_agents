@@ -171,10 +171,19 @@ def _on_session_end(*, session_id: str = '', **kw: Any) -> None:
             _emit(st, 'session_end', reason=kw.get('reason', ''))
 
 
+def _bg() -> bool:
+    """True on hermes' background threads (e.g. 'bg-review', the post-turn self review). Their tool calls
+    are not part of the user's task: flag them, never mark the session running, never deliver into them."""
+    return threading.current_thread().name.startswith('bg-')
+
+
 def _on_pre_tool_call(*, tool_name: str = '', args: Any = None, session_id: str = '', **_: Any) -> None:
     with _lock:
         st = _sess(session_id)
         if st:
+            if _bg():
+                _emit(st, 'tool_start', tool=tool_name, args=_clip(args, 3000), bg=True)
+                return None
             st['running'] = True
             _emit(st, 'tool_start', tool=tool_name, args=_clip(args, 3000))
     return None
@@ -195,13 +204,13 @@ def _on_post_tool_call(*, tool_name: str = '', result: Any = None, session_id: s
         st = _sess(session_id)
         if st:
             _emit(st, 'tool_end', tool=tool_name, status=status, duration_ms=kw.get('duration_ms'),
-                  result=_clip(result, 2500))
+                  result=_clip(result, 2500), **({'bg': True} if _bg() else {}))
 
 
 def _on_transform_tool_result(*, result: Any = None, session_id: str = '', **_: Any):
     with _lock:
         st = _sess(session_id)
-        if not st or not st['pending'] or not isinstance(result, str):
+        if not st or not st['pending'] or not isinstance(result, str) or _bg():
             return None
         msgs, st['pending'] = st['pending'], []
         _emit(st, 'delivered', via='tool_result', texts=[m['text'] for m in msgs])
@@ -210,6 +219,8 @@ def _on_transform_tool_result(*, result: Any = None, session_id: str = '', **_: 
 
 def _on_post_llm_call(*, session_id: str = '', user_message: Any = None, assistant_response: Any = None,
                       **_: Any) -> None:
+    if _bg():
+        return
     with _lock:
         st = _sess(session_id)
         if not st:

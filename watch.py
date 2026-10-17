@@ -194,6 +194,10 @@ class Watcher:
 
     def on(self, ev, live=True):
         t, ts = ev.get('type'), ev.get('ts', time.time())
+        if ev.get('bg'):  # hermes' background self-review: log it, but it is not the user's task
+            if t == 'tool_start':
+                self.w(f'{hms(ts)} (bg) ▶ {tool_cmd(ev.get("tool"), ev.get("args"))[:300]}')
+            return
         self.last_ev = time.time() if live else ts
         if t in ('stream', 'tool_start') and not self.running:  # a new turn begins: restart the clocks
             self.last_tool = self.last_ev
