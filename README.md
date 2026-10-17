@@ -118,3 +118,18 @@ python3 watch.py think                      # 지금 모델이 스트리밍 중�
 
 Claude Code 쪽: `tail -F attach_state/alerts.log`를 Monitor로 걸어두고, `REVIEW`/`CLAIM`/`EXCUSE`/`ESCALATE`에 깨어나
 `watch.py show`로 실제 행동을 확인한 뒤 필요하면 `watch.py say`로 교정/보완 지시.
+
+### 운영 메모 (ollama 로컬 모델, 2026-10-18 실전 감시에서 확인)
+
+- **도구 인자는 스트리밍되지 않는다.** 긴 `write_file` 본문을 생성하는 동안 hermes에는 청크가 하나도 안 온다.
+  hermes는 900s 동안 청크가 없으면 `Stream stale`로 연결을 끊고 재시도하므로, 큰 문서를 한 번에 쓰면 15분 생성 후 아무것도 안 남는다.
+  → 감지되면 "계획은 그대로, 첫 섹션으로 파일 생성 후 나머지는 섹션별로 append" 힌트 한 번이면 해결된다 (`say --now`, 어차피 잘릴 생성이므로 손실 없음).
+- 같은 이유로 그 구간에는 `THINK`/`STALL`이 오탐으로 뜬다. 실제 생성 중인지는 `journalctl -u ollama`의 `n_decoded`로 확인.
+- 자동 nudge(`auto=True`)는 이 오탐 때문에 진행 중인 생성을 끊을 수 있다. ollama 환경에서는 `--no-auto`로 붙이고 사람/Claude Code가 판단하는 편이 안전하다.
+- 턴이 끝난 뒤 hermes가 자체 리뷰(`bg-review` 스레드)로 도구를 호출한다 — 사용자 작업이 아니므로 플러그인이 `bg` 표시로 구분한다.
+
+감시 보조 스크립트:
+```bash
+tools/alerts_filter.sh            # alerts.log 스트림. ollama가 놀고 있을 때의 STALL/THINK(오탐)는 버림
+tools/silentgen.sh <SID> [480]    # ollama는 생성 중인데 hermes 이벤트가 480s 없으면 1줄 출력 (900s 컷 전에 개입할 시점)
+```
