@@ -112,6 +112,9 @@ python3 watch.py think                      # 지금 모델이 스트리밍 중�
 | 매 턴 종료 | 항상 | 알림 `REVIEW` (Claude Code가 품질·할루시네이션 판단 후 `say`) |
 
 같은 종류 nudge는 5분 쿨다운, 자동 nudge는 attach당 `WATCH_MAX_AUTO`(8)회까지이고 이후는 `ESCALATE` 알림만 남긴다.
+`--now` nudge(진행 중 생성 취소)는 **턴당 1회**만 보내고 이후는 `ESCALATE` 알림으로 돌린다 — 반복 redirect는 hermes가 턴 자체를 포기하게 만든다.
+모델이 도구 인자를 쓰는 중(예: 긴 `write_file` 본문)에는 스트림 이벤트가 없으므로, 플러그인이 `tool_gen` 이벤트를 남기고
+감시기는 그동안 think/stall nudge를 하지 않는다(`WATCH_HANG_SEC` 넘으면 `SLOWGEN` 알림만).
 
 Claude Code 쪽: `tail -F attach_state/alerts.log`를 Monitor로 걸어두고, `REVIEW`/`CLAIM`/`EXCUSE`/`ESCALATE`에 깨어나
 `watch.py show`로 실제 행동을 확인한 뒤 필요하면 `watch.py say`로 교정/보완 지시.

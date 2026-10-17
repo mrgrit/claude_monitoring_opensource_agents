@@ -162,6 +162,8 @@ class Watcher:
         self.r_chars = self.t_chars = 0  # reasoning vs visible text streamed since the last tool activity
         self.cool = {}
         self.n_auto = 0
+        self.gen = None                # (tool, started): model is writing a tool call's arguments
+        self.turn_now = 0              # interrupting (--now) nudges sent this turn
 
     def w(self, line):
         self.tr.write(line + '\n')
@@ -180,10 +182,13 @@ class Watcher:
         self.cool[key] = time.time()
         text, mode = NUDGE[key]
         text = text.format(**kw)
-        if not self.auto or self.n_auto >= MAX_AUTO:
+        # A --now nudge cancels the in-flight generation. Repeating it can cancel the whole turn
+        # (hermes gives up after every retry is redirected), so allow one per turn and escalate after that.
+        if not self.auto or self.n_auto >= MAX_AUTO or (mode == 'now' and self.turn_now):
             self.alert('ESCALATE' if self.auto else key.upper(), f'(no auto) {text}')
             return
         self.n_auto += 1
+        self.turn_now += mode == 'now'
         say(self.sid, text, mode)
         self.alert(f'AUTO:{key}', text)
 
@@ -195,6 +200,7 @@ class Watcher:
             self.turn_start = ts
         if t in ('tool_start', 'tool_end', 'turn_end'):
             self.r_chars = self.t_chars = 0
+            self.gen = None
         if t == 'tool_start':
             self.running = True
             cmd = tool_cmd(ev.get('tool'), ev.get('args'))
@@ -219,6 +225,10 @@ class Watcher:
                 self.last_err = res[:300]
                 if live and self.err_streak >= ERR_N:
                     self.nudge('errs', n=self.err_streak, err=self.last_err)
+        elif t == 'tool_gen':
+            self.running = True
+            self.gen = (ev.get('tool') or '?', time.time() if live else ts)
+            self.w(f'{hms(ts)} ✎ writing {self.gen[0]} arguments')
         elif t == 'stream':
             self.running = True
             c = ev.get('chars') or {}
@@ -241,9 +251,12 @@ class Watcher:
                     self.alert('CLAIM', f'claims success with tools={self.turn_tools}, last tool failed='
                                         f'{self.err_streak > 0} — verify')
             self.turn_tools = self.turn_errs = 0
+            self.turn_now = 0
             self.turn_start = ts
         elif t in ('delivered', 'inject_failed'):
             self.w(f'{hms(ts)} >> SUPERVISOR {t} via {ev.get("via")}/{ev.get("why", "")}: {ev.get("texts")}')
+            if t == 'delivered' and live:  # give the model a fresh window to act on the message
+                self.last_tool = time.time()
             if t == 'inject_failed' and live:
                 self.alert('INJECT_FAILED', f'{ev.get("texts")} (kept for next tool result)')
         elif t in ('session_start', 'session_end'):
@@ -253,6 +266,10 @@ class Watcher:
         n = time.time()
         if self.pending and n - self.pending[1] > HANG_SEC:
             self.nudge('hang', cmd=self.pending[0][:200], sec=int(n - self.pending[1]))
+        elif self.gen:  # silent while writing tool arguments: never interrupt, just flag if it takes too long
+            if n - self.gen[1] > HANG_SEC and time.time() - self.cool.get('gen', 0) > COOLDOWN:
+                self.cool['gen'] = time.time()
+                self.alert('SLOWGEN', f'writing {self.gen[0]} arguments for {int(n - self.gen[1])}s')
         elif self.running and not self.pending:
             if n - self.last_ev > STALL_SEC:
                 self.nudge('stall', sec=int(n - self.last_ev))

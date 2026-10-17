@@ -2,7 +2,9 @@
 
 Per session (keyed by hermes session_id) under ~/.hermes/cc_watch/<sid>/:
   meta.json      pid / cwd / argv of the hermes process that owns the session
-  events.jsonl   session_start, tool_start, tool_end, stream (rate-limited), turn_end, delivered, ...
+  events.jsonl   session_start, tool_start, tool_end, stream (rate-limited), tool_gen, turn_end, delivered, ...
+                 (tool_gen = the model started writing a tool call's arguments, e.g. a long write_file body;
+                  no stream deltas arrive for that, so the watcher must not mistake it for a stall)
   stream_tail.txt last ~4KB of streamed text/reasoning (overwritten)
   inbox/*.json   {"text": ..., "mode": "note"|"now"} written by the supervisor (watch.py say)
 
@@ -218,12 +220,40 @@ def _on_post_llm_call(*, session_id: str = '', user_message: Any = None, assista
             m['queued'] = time.time() - NOTE_MAX_WAIT + 3
 
 
+def _hook_tool_gen(sid: str, st: dict) -> None:
+    """Wrap the live agent's tool_gen_callback so argument generation shows up as a 'tool_gen' event.
+    It is an agent callback, not a plugin hook, so we chain onto it (once per agent object)."""
+    ag, _ = _live_agent(sid)
+    if ag is None or st.get('gen_ag') is ag:
+        return
+    st['gen_ag'] = ag
+    orig = getattr(ag, 'tool_gen_callback', None)
+    if getattr(orig, '_cc_watch', False):
+        return
+
+    def cb(name, *a, **kw):
+        try:
+            with _lock:
+                _emit(st, 'tool_gen', tool=name)
+        except Exception:
+            pass
+        if orig is not None:
+            return orig(name, *a, **kw)
+
+    cb._cc_watch = True
+    try:
+        ag.tool_gen_callback = cb
+    except Exception:
+        pass
+
+
 def _on_stream_delta(*, delta: str = '', kind: str = 'text', session_id: str = '', **_: Any) -> None:
     with _lock:
         st = _sess(session_id)
         if not st or not isinstance(delta, str):
             return
         st['running'] = True
+        _hook_tool_gen(session_id or _last_sid, st)
         st['stream'][kind] = st['stream'].get(kind, 0) + len(delta)
         st['tail'] = (st['tail'] + delta)[-TAIL:]
         now = time.time()
