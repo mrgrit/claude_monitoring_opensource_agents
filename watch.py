@@ -28,16 +28,18 @@ COOLDOWN = 300
 MAX_AUTO = int(os.environ.get('WATCH_MAX_AUTO', 8))
 
 NUDGE = {
-    'think': ("도구 실행 없이 {sec}초째 생각만 하고 있다 (리즈닝 {chars}자). 고민은 그만하고, 다음에 할 일을 한 문장으로 "
-              "말한 뒤 바로 실행해라 (명령 실행 또는 답 작성).", 'now'),
-    'stall': ("{sec}초째 진행이 없다. 지금 어디까지 왔는지 한 문장으로 말하고 다음 단계를 바로 실행해라.", 'now'),
-    'loop': ("같은 명령을 {n}번 실행했다: `{cmd}`. 다시 해도 결과는 같다. 에러를 읽고 다른 방법을 써라.", 'note'),
-    'errs': ("명령이 {n}번 연속 실패했다. 한 발 물러서서 근본 원인을 한 문장으로 말하고, 더 단순한 방법으로 가라. "
-             "마지막 에러: {err}", 'note'),
-    'hang': ("`{cmd}`가 {sec}초째 실행 중이다. 입력을 기다리거나 끝나지 않는 거라면 중단하고 "
-             "`timeout`과 비대화형 옵션을 붙여 다시 실행해라.", 'now'),
-    'excuse': ("도구나 패키지가 없다는 건 멈출 이유가 아니다. 설치해라 (pip/pipx/npm/go install/cargo/소스 빌드/릴리스 다운로드) "
-               "그리고 작업을 끝내라. 불가능하다는 보고는 실제로 시도해 본 뒤 정확한 에러를 보여줄 때만 해라.", 'note'),
+    'think': ("You have been thinking for {sec}s ({chars} reasoning chars) without running anything. Stop deliberating: state in ONE "
+              "sentence what you will do next, then immediately take that step (run the command / write the answer).", 'now'),
+    'stall': ("No progress for {sec}s. State in one sentence where you are and run the next concrete step now.", 'now'),
+    'loop': ("You ran the same command {n} times: `{cmd}`. It will not give a different result. Read the error, "
+             "and try a different approach.", 'note'),
+    'errs': ("{n} commands in a row failed. Step back: state the root cause in one sentence, then take a simpler "
+             "path. Last error: {err}", 'note'),
+    'hang': ("`{cmd}` has been running {sec}s. If it is waiting for input or will not finish, abort it and rerun with "
+             "`timeout` and non-interactive flags.", 'now'),
+    'excuse': ("A missing tool/package is not a reason to stop. Install it (pip/pipx/npm/go install/cargo/build from "
+               "source/download a release) and finish the task. Only report impossibility after you actually tried "
+               "and show the exact error.", 'note'),
 }
 
 EXCUSE_RE = re.compile(
