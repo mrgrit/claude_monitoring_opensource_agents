@@ -1,0 +1,12 @@
+name: cc_watch
+version: "0.1.0"
+description: "Attach bus for an external supervisor (Claude Code / watch.py). Mirrors tool calls, turn results and stream heartbeats of every live session to ~/.hermes/cc_watch/<session_id>/events.jsonl, and delivers supervisor messages dropped into that session's inbox/ — piggybacked on the next tool result while a turn runs, injected as a user turn when idle or urgent."
+author: "mrgrit"
+provides_hooks:
+  - on_session_start
+  - on_session_end
+  - pre_tool_call
+  - post_tool_call
+  - transform_tool_result
+  - post_llm_call
+  - on_stream_delta

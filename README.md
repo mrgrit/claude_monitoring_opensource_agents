@@ -60,3 +60,58 @@ python3 assemble.py                     # 원샷 스크립트 재생성
 hermes 호출: `hermes chat --query-file … --format stream-json --yolo --max-turns 60 --run-budget 2700 --continue kit-<task> --create-if-missing`
 
 비밀값(PAT 등)은 이 저장소와 에이전트 프롬프트에 절대 넣지 않는다. git push는 에이전트가 아니라 runner가 게이트 통과 후 수행한다.
+
+## Attach 모드 — 이미 돌고 있는 hermes를 감시 (`watch.py`)
+
+위의 runner 방식과 반대로, **사용자가 hermes에 직접 일을 시켜두고** 나중에 감시기를 붙이는 방식.
+작업 내용(무엇을 시키는지)에는 관여하지 않고, **어떻게 일하는지**만 본다: 생각만 하고 행동 안 함, 같은 명령 반복,
+실패 연쇄, 멈춘 명령, "도구가 없어서 못 했습니다" 식 회피, 근거 없는 "완료" 주장, 품질/할루시네이션(→ Claude Code가 판단).
+
+구성:
+```
+hermes_plugin/cc_watch/   hermes 플러그인 (hermes 프로세스 안에서 동작)
+                          - 이벤트 기록: ~/.hermes/cc_watch/<session_id>/events.jsonl (도구 호출/결과, 턴 결과, 스트림 heartbeat)
+                          - 감독 메시지 전달: inbox/ 에 들어온 메시지를
+                              작업 중 + note  → agent.steer()    (다음 도구 결과 뒤에 끼워 넣음, 작업 안 끊김)
+                              작업 중 + now   → agent.redirect() (진행 중인 모델 생성만 취소, 맥락 유지하고 교정)
+                              대기 중         → inject_message() (새 턴으로 시작)
+watch.py                  감시기: 세션 선택, 이상 감지, 자동 nudge, 알림(attach_state/alerts.log), 메시지 전송
+```
+
+설치 (1회):
+```bash
+ln -sfn "$PWD/hermes_plugin/cc_watch" ~/.hermes/plugins/cc_watch
+hermes plugins enable cc_watch
+hermes config set plugins.stream_reasoning_deltas true                      # 리즈닝 감시용
+hermes config set plugins.entries.cc_watch.allow_gateway_injection true     # TUI 모드에서 메시지 주입 허용
+```
+플러그인은 **설치 이후에 시작한 hermes**에만 로드된다. 이미 떠 있던 hermes는 종료 후 `hermes -c`로 같은 대화를 이어서 열면 된다.
+세션은 첫 턴이 시작돼야 목록에 나타난다.
+
+사용:
+```bash
+python3 watch.py list                       # 붙을 수 있는 hermes 세션 (pid, 작업 첫 줄)
+python3 watch.py attach                     # 번호로 선택 후 감시 시작 (--no-auto: 자동 nudge 끄고 알림만)
+python3 watch.py say "pyproject로 설치해라"     # 작업 끊지 않고 지시 (steer)
+python3 watch.py say --now "멈춰. 방향 바꿔서 …"  # 진행 중 생성 취소하고 즉시 교정 (redirect)
+python3 watch.py show 50                    # 읽기 쉬운 transcript
+python3 watch.py think                      # 지금 모델이 스트리밍 중인 리즈닝/텍스트 끝부분
+```
+
+감지 → 대응:
+
+| 감지 | 조건 (env로 조정) | 자동 대응 |
+|---|---|---|
+| 과도한 리즈닝 | 도구 없이 `WATCH_THINK_SEC`(300s) 경과, 리즈닝 > 본문 텍스트 | `--now` "한 문장으로 다음 행동 말하고 바로 실행" |
+| 무진행 | 이벤트 없이 `WATCH_STALL_SEC`(420s) | `--now` 현재 위치 보고 후 다음 단계 |
+| 반복 루프 | 최근 10개 중 같은 명령 3회 | note "다른 접근" |
+| 실패 연쇄 | 연속 5회 실패 | note "근본 원인 한 문장 + 더 단순한 경로" |
+| 걸린 명령 | 도구 1개가 `WATCH_HANG_SEC`(1500s) 실행 중 | `--now` timeout/비대화형으로 재실행 |
+| 회피 ("설치 안 돼 있어서 못함") | 턴 결과 문장 패턴 | note "없으면 설치해서 끝까지 해라" |
+| 근거 없는 완료 주장 | "완료/성공" + 도구 0회 또는 마지막 도구 실패 | 알림 `CLAIM` (Claude Code가 확인) |
+| 매 턴 종료 | 항상 | 알림 `REVIEW` (Claude Code가 품질·할루시네이션 판단 후 `say`) |
+
+같은 종류 nudge는 5분 쿨다운, 자동 nudge는 attach당 `WATCH_MAX_AUTO`(8)회까지이고 이후는 `ESCALATE` 알림만 남긴다.
+
+Claude Code 쪽: `tail -F attach_state/alerts.log`를 Monitor로 걸어두고, `REVIEW`/`CLAIM`/`EXCUSE`/`ESCALATE`에 깨어나
+`watch.py show`로 실제 행동을 확인한 뒤 필요하면 `watch.py say`로 교정/보완 지시.
